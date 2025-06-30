@@ -6,5 +6,5 @@ idna==3.4
 requests==2.31.0
 soupsieve==2.4
 termcolor==2.2.0
-urllib3==1.26.15
+urllib3==2.5.0
 wget==3.2
