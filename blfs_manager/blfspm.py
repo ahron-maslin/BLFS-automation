@@ -31,6 +31,8 @@ def main():
                         help='List/download recommended packages.\n', action='store_true')
     parser.add_argument('-s', '--search', help='Search for a given package. (Case Sensitive)\n', metavar='PACKAGE')
     parser.add_argument('--systemd', help='Pass this flag if you built LFS with Systemd', action='store_true')
+    parser.add_argument('-V', '--version', action='version',
+                        version=f'{__PKGNAME__} {__VERSION__}')
     args = parser.parse_args()
 
     db = load_db(args.systemd)
@@ -39,20 +41,22 @@ def main():
     action = Commands(db, installed)
     signal.signal(signal.SIGINT, action.cleanup)
 
-    if args.download:
-        action.download_deps(action.list_deps(
-            args.download, args.recommended, args.optional))
-    elif args.list:
-        print_deps(action.list_deps(args.list, args.recommended, args.optional))
-    elif args.commands:
-        print_commands(action.list_commands(args.commands), args.commands)
-    elif args.all:
-        action.download_deps(db)
-    elif args.build:
-        action.build_pkg(args.build, args.force)
-    elif args.search:
-        action.search(args.search)
-    else:
-        parser.print_help()
-
-    action.write_installed_log()
+    try:
+        if args.download:
+            action.download_deps(action.list_deps(
+                args.download, args.recommended, args.optional))
+        elif args.list:
+            print_deps(action.list_deps(args.list, args.recommended, args.optional))
+        elif args.commands:
+            print_commands(action.list_commands(args.commands), args.commands)
+        elif args.all:
+            action.download_deps(list(db))
+        elif args.build:
+            action.build_pkg(args.build, args.force)
+        elif args.search:
+            action.search(args.search)
+        else:
+            parser.print_help()
+    finally:
+        # Persist progress even when a build aborts partway through.
+        action.write_installed_log()

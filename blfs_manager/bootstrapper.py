@@ -1,4 +1,5 @@
 from multiprocessing.pool import ThreadPool
+import os
 import re
 import json
 import logging
@@ -7,7 +8,7 @@ from urllib3.util import Retry
 from bs4 import BeautifulSoup as bs4
 from requests.adapters import HTTPAdapter
 
-from .define import DEFAULT_BASE_URL, DB_FILENAME, DbTypes
+from .define import DEFAULT_BASE_URL, DB_PATH, HEADERS, DbTypes
 
 database = {}
 
@@ -56,7 +57,8 @@ def url_get(url, headers=None, timeout=30):
     session.mount('https://', HTTPAdapter(max_retries=retries))
 
     with session as s:
-        response = s.get(url.rstrip(), headers=headers, timeout=timeout)
+        response = s.get(url.rstrip(), headers=headers or HEADERS, timeout=timeout)
+        response.raise_for_status()
 
     return response
 
@@ -201,5 +203,9 @@ def bootstrap(lfs_flavor=DEFAULT_BASE_URL):
         logging.error(f'Number of downloaded packages: {pkg_count}'.format(pkg_count))
         exit(1)
 
-    with open(DB_FILENAME, 'w+') as file:
+    # Write via a temporary file so an interrupted scrape cannot leave behind a
+    # truncated database that every later run would happily load.
+    tmp_path = f'{DB_PATH}.tmp'
+    with open(tmp_path, 'w') as file:
         json.dump(database, file)
+    os.replace(tmp_path, DB_PATH)

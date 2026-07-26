@@ -8,7 +8,7 @@ import logging
 from termcolor import colored
 
 
-from .define import DOWNLOAD_PATH, DB_FILENAME, INSTALLED_PATH, SYSTEMD_BASE_URL, DEFAULT_BASE_URL
+from .define import DOWNLOAD_PATH, DB_PATH, INSTALLED_PATH, SYSTEMD_BASE_URL, DEFAULT_BASE_URL
 from .bootstrapper import bootstrap
 
 
@@ -22,10 +22,10 @@ def load_db(systemd=False):
     Returns:
         dict: A dictionary containing the loaded JSON data from the database file.
     """
-    if not os.path.exists(DB_FILENAME):
+    if not os.path.exists(DB_PATH):
         logging.info('Downloading database, (this is a one time process)')
         bootstrap(SYSTEMD_BASE_URL if systemd else DEFAULT_BASE_URL)
-    with open(DB_FILENAME, 'r') as database:
+    with open(DB_PATH, 'r') as database:
         return json.load(database)
         
 def load_installed_log():
@@ -111,10 +111,24 @@ def md5_check(file, hash):
     Raises:
         OSError: If the downloaded file does not match the expected hash.
     """
-    file_hash = hashlib.md5(open(file, 'rb').read()).hexdigest()
-    if hash != file_hash:
+    if not hash or not re.fullmatch(r'[0-9a-fA-F]{32}', str(hash).strip()):
+        logging.warning(colored(
+            f'No usable MD5 sum recorded for {file} - integrity NOT verified.', 'yellow'))
+        return
+
+    digest = hashlib.md5()
+    with open(file, 'rb') as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(chunk)
+    file_hash = digest.hexdigest()
+
+    if str(hash).strip().lower() != file_hash:
         os.remove(file)
-        raise OSError('Downloaded file does not match the MD5 hash!\n')
+        raise OSError(
+            f'Downloaded file does not match the MD5 hash!\n'
+            f'  file:     {file}\n'
+            f'  expected: {hash}\n'
+            f'  actual:   {file_hash}\n')
 
 
 def run_cmd(command):
@@ -125,11 +139,25 @@ def run_cmd(command):
         command (str): The command string.
 
     Returns:
-        None
+        int: The exit status of the command. 0 means success.
     """
     logging.info(colored(f'Running {command}', 'green'))
-    subprocess.call(['/bin/sh', '-c', command])  # output command to shell
-    os.chdir(os.getcwd() + '/' + change_dir(re.sub('\s+', ' ', command).split()))
+    returncode = subprocess.call(['/bin/sh', '-c', command])
+
+    if returncode != 0:
+        logging.error(colored(
+            f'Command failed with exit status {returncode}: {command}', 'red'))
+        return returncode
+
+    # `cd` inside `sh -c` dies with the subshell, so replay it in our own process.
+    target = change_dir(re.sub(r'\s+', ' ', command).split())
+    if target:
+        try:
+            os.chdir(target)
+        except OSError as exc:
+            logging.error(colored(f'Could not change directory: {exc}', 'red'))
+            return 1
+    return 0
 
 
 def is_within_directory(directory, target):
@@ -143,10 +171,11 @@ def is_within_directory(directory, target):
     Returns:
         bool: True if the target is within the directory, False otherwise.
     """
-    abs_directory = os.path.abspath(directory)
-    abs_target = os.path.abspath(target)
-    prefix = os.path.commonprefix([abs_directory, abs_target])
-    return prefix == abs_directory
+    # os.path.commonprefix() is a *string* operation: it happily reports that
+    # "/src/foo-evil" lives inside "/src/foo". Compare resolved path components.
+    abs_directory = os.path.realpath(directory)
+    abs_target = os.path.realpath(target)
+    return os.path.commonpath([abs_directory, abs_target]) == abs_directory
 
 
 def safe_extract(tar, path=".", members=None, *, numeric_owner=False): 
@@ -167,8 +196,17 @@ def safe_extract(tar, path=".", members=None, *, numeric_owner=False):
     for member in tar.getmembers():
         member_path = os.path.join(path, member.name)
         if not is_within_directory(path, member_path):
-            raise Exception("Attempted Path Traversal in Tar File")
-    tar.extractall(path, members, numeric_owner=numeric_owner) 
+            raise Exception(
+                f'Attempted Path Traversal in Tar File: {member.name}')
+        # A symlink/hardlink whose target escapes the extraction root lets a
+        # later member be written outside it.
+        if member.issym() or member.islnk():
+            link_path = os.path.join(os.path.dirname(member_path), member.linkname)
+            if not is_within_directory(path, link_path):
+                raise Exception(
+                    f'Attempted Link Traversal in Tar File: '
+                    f'{member.name} -> {member.linkname}')
+    tar.extractall(path, members, numeric_owner=numeric_owner)
 
 def print_deps(pkg_list):
     """
@@ -183,7 +221,6 @@ def print_deps(pkg_list):
     logging.info(colored("Install packages in this order:\n", "green"))
     for pkg in pkg_list:
         logging.info(colored(pkg, attrs=['bold']))
-    exit(0)
 
 def print_commands(cmd_list, pkg):
     """
