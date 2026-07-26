@@ -6,7 +6,7 @@ from shutil import rmtree
 import wget
 from termcolor import colored
 
-from .define import DbTypes, ROOT_PATH, EXCEPTIONS, EXTENSIONS, CIRC_EXCEPTIONS, DOWNLOAD_PATH, INSTALLED_PATH
+from .define import DbTypes, ROOT_PATH, EXCEPTIONS, EXTENSIONS, DOWNLOAD_PATH, INSTALLED_PATH
 from .utils import run_cmd, md5_check, safe_extract, rlinput, check_dir
 
 class Commands(object):
@@ -32,12 +32,23 @@ class Commands(object):
         """
         self.database = database
         self.installed = installed
-    
+        # Set once a build directory exists; cleanup() may fire before then.
+        self.package_dir = None
+
     def write_installed_log(self):
         """Writes the list of installed packages to a logfile."""
-        with open(INSTALLED_PATH, 'w') as install_file:
-            for i in self.installed:
-                install_file.write(f'{i}\n')
+        # Write-then-rename: a crash or power loss mid-write must not truncate
+        # the record of what is already on the system.
+        tmp_path = f'{INSTALLED_PATH}.tmp'
+        try:
+            with open(tmp_path, 'w') as install_file:
+                for i in self.installed:
+                    install_file.write(f'{i}\n')
+            os.replace(tmp_path, INSTALLED_PATH)
+        except OSError as exc:
+            logging.error(colored(
+                f'Could not write installed-package log ({exc}) - '
+                f'run as root so progress can be recorded.', "red"))
     
     def cleanup(self, signum, frame):
         """Cleans up installation when the user interrupts it using the keyboard interrupt (ctrl-c).
@@ -48,8 +59,8 @@ class Commands(object):
 
         """
         os.chdir(ROOT_PATH)
-        if os.path.exists(self.package_dir):
-            rmtree(self.package_dir)
+        if self.package_dir and os.path.exists(self.package_dir):
+            rmtree(self.package_dir, ignore_errors=True)
 
         logging.error(colored('Installation interrupted - exiting.', 'red'))
         self.write_installed_log()
@@ -63,8 +74,12 @@ class Commands(object):
             kconf (bool): If True, logs kernel configuration information.
 
         """
+        if pkg not in self.database:
+            return
         if self.database[pkg][DbTypes.TYPE] != 'BLFS':
-            logging.info(f'"{pkg}" is not a BLFS package, you can download it at {self.database[pkg][DbTypes.URL][0]}')
+            urls = self.database[pkg][DbTypes.URL]
+            where = f', you can download it at {urls[0]}' if urls else ''
+            logging.info(f'"{pkg}" is not a BLFS package{where}')
         if kconf:
             if self.database[pkg][DbTypes.KCONF]:
                 logging.info('This package requires some kernel configuration before installation.\n')
@@ -80,16 +95,34 @@ class Commands(object):
         """
         if len(pkg) < 3:
             logging.error(colored('The inputted value needs to be at least 3 characters.', 'red'))
-            exit(1)
+            raise SystemExit(1)
         if pkg in self.database:
             logging.info(f'"{pkg}" package exists in database.')
-            # add query if it should install it
             return
-        logging.info(colored(f'"{pkg}" package not found in database, but we found similar ones.\n', "blue"))
-        for item in self.database.keys():
-            if pkg.lower() in item.lower():
-                logging.info(item)
-        exit(0)
+
+        matches = self.find_matches(pkg)
+        if not matches:
+            logging.error(colored(f'"{pkg}" package not found in database.', "red"))
+            raise SystemExit(1)
+
+        logging.info(colored(
+            f'"{pkg}" package not found in database, but we found similar ones.\n', "blue"))
+        for item in matches:
+            logging.info(item)
+        raise SystemExit(1)
+
+    def find_matches(self, pkg):
+        """Returns database entries whose name contains pkg, case-insensitively.
+
+        Args:
+            pkg (str): The substring to look for.
+
+        Returns:
+            list: Matching package names.
+
+        """
+        needle = pkg.lower()
+        return [name for name in self.database if needle in name.lower()]
 
     def list_commands(self, pkg):
         """Lists the installation commands for a given BLFS package.
@@ -135,48 +168,118 @@ class Commands(object):
         Returns:
             None
         """
-        # check if blfs package or external
         if pkg in self.installed and not force:
             logging.info(colored(f'"{pkg}" has already been installed - skipping', "blue"))
             return
-        else:
-            if pkg not in EXCEPTIONS:
-                logging.info(colored(f'Installing {pkg}.\n', "green"))
-                file_to_extract = self.database[pkg][DbTypes.URL][0]
-                file_basename = os.path.basename(file_to_extract)
-                if tarfile.is_tarfile(file_basename):
-                    with tarfile.open(file_basename, 'r') as tar_ref:
-                        safe_extract(tar_ref)
-                        os.chdir(tar_ref.getnames()[0].split('/', 1)[0])
 
-                if zipfile.is_zipfile(file_basename):
-                    with zipfile.ZipFile(file_basename, 'r') as zip_ref:
-                        zip_new_dir = os.path.splitext(file_basename)[0]
-                        logging.info(zip_new_dir)
-                        zip_ref.extractall(zip_new_dir)
-                        os.chdir(zip_new_dir)
-            else:
-                pkg = pkg.replace(' ', '_')
-                if not os.path.exists(DOWNLOAD_PATH + pkg):
-                    os.mkdir(pkg, 0o755)
-                    os.chdir(pkg)
+        if pkg in EXCEPTIONS:
+            logging.info(colored(
+                f'"{pkg}" is a book section, not a single package - '
+                f'follow the BLFS book to install it manually.', "blue"))
+            return
 
-            commands = self.list_commands(pkg)
-            self.package_dir = os.getcwd()
-            for command in commands:
-                install_query = input(f'Should I run \n"{command}"\n <Y/n/m (modify)>')
-                if install_query.lower()[:1] == 'n':
-                    pass
-                elif install_query.lower()[:1] == 'm':
-                    modified_cmd = rlinput('Custom command to run: ', command)
-                    run_cmd(modified_cmd)
-                elif install_query.lower()[:1] == '' or 'y':
-                    run_cmd(command)
-            if not force:
+        if self.database.get(pkg, {}).get(DbTypes.TYPE) != 'BLFS':
+            self.check_pkg_status(pkg)
+            logging.info(colored(
+                f'"{pkg}" is not a BLFS package - install it manually, '
+                f'then re-run to continue.', "blue"))
+            return
+
+        logging.info(colored(f'Installing {pkg}.\n', "green"))
+        os.chdir(DOWNLOAD_PATH)
+
+        if not self._extract_source(pkg):
+            return
+
+        self.package_dir = os.getcwd()
+        try:
+            if not self._run_install_commands(pkg):
+                logging.error(colored(
+                    f'Build of "{pkg}" failed - leaving {self.package_dir} '
+                    f'in place so you can inspect it.', "red"))
+                return
+            # Record regardless of --force: the package really is on the system
+            # now, and dropping it would make the next run rebuild it.
+            if pkg not in self.installed:
                 self.installed.append(pkg)
+            self.write_installed_log()
+            logging.info(colored(f'Successfully installed {pkg}!', "green"))
+        finally:
             os.chdir(DOWNLOAD_PATH)
-            rmtree(self.package_dir)
-            logging.info(f'succesfully installed {pkg}!')
+
+        rmtree(self.package_dir, ignore_errors=True)
+        self.package_dir = None
+
+    def _extract_source(self, pkg):
+        """Extracts the source tarball/zip for pkg and enters its directory.
+
+        Args:
+            pkg (str): The name of the package to extract.
+
+        Returns:
+            bool: True if the source was extracted and entered, else False.
+
+        """
+        urls = self.database[pkg][DbTypes.URL]
+        if not urls:
+            logging.error(colored(
+                f'No download URL recorded for "{pkg}" - skipping.', "red"))
+            return False
+
+        archive = os.path.basename(urls[0])
+        if not os.path.isfile(archive):
+            logging.error(colored(
+                f'Source archive "{archive}" for {pkg} is missing - '
+                f'run with -d to download it first.', "red"))
+            return False
+
+        try:
+            if tarfile.is_tarfile(archive):
+                with tarfile.open(archive, 'r') as tar_ref:
+                    safe_extract(tar_ref)
+                    top_level = tar_ref.getnames()[0].split('/', 1)[0]
+                os.chdir(top_level)
+                return True
+
+            if zipfile.is_zipfile(archive):
+                with zipfile.ZipFile(archive, 'r') as zip_ref:
+                    zip_new_dir = os.path.splitext(archive)[0]
+                    zip_ref.extractall(zip_new_dir)
+                os.chdir(zip_new_dir)
+                return True
+        except (OSError, tarfile.TarError, zipfile.BadZipFile, IndexError) as exc:
+            logging.error(colored(f'Could not extract {archive}: {exc}', "red"))
+            return False
+
+        logging.error(colored(
+            f'"{archive}" is neither a tar nor a zip archive - skipping.', "red"))
+        return False
+
+    def _run_install_commands(self, pkg):
+        """Prompts for and runs each build command for pkg.
+
+        Args:
+            pkg (str): The name of the package being built.
+
+        Returns:
+            bool: True if every command the user chose to run succeeded.
+
+        """
+        for command in self.list_commands(pkg):
+            answer = input(
+                f'Should I run \n"{command}"\n <Y/n/m (modify)/q (quit)> ').strip().lower()[:1]
+
+            if answer == 'n':
+                continue
+            if answer == 'q':
+                logging.info(colored('Aborting this package.', "blue"))
+                return False
+            if answer == 'm':
+                command = rlinput('Custom command to run: ', command)
+
+            if run_cmd(command) != 0:
+                return False
+        return True
 
     def download_deps(self, dlist):
         """Downloads all urls in dlist (can be all urls or just some dependencies).
@@ -193,23 +296,42 @@ class Commands(object):
         """
         check_dir()
         for pkg in dlist:
-            if pkg in self.database and pkg not in EXCEPTIONS:
-                for url, hash_val in zip(self.database[pkg][DbTypes.URL], self.database[pkg][DbTypes.HASHES]):
-                    self.check_pkg_status(pkg)
-                    for ext in EXTENSIONS:
-                        if ext in url:
-                            filename = os.path.basename(url)
-                            if not os.path.isfile(filename):
-                                logging.info(colored(f'\nDownloading: {url}\n', "green"))
-                                wget.download(url, filename)
-                                print(f'\nSuccessfully downloaded {url}')
-                                md5_check(filename, hash_val)
-                            else:
-                                logging.info(colored(f'{filename} already has been downloaded', "blue"))
-            elif pkg in EXCEPTIONS:
+            if pkg in EXCEPTIONS:
                 logging.info(f'"{pkg}" package must be installed manually.')
-            else:
-                logging.error(colored(f'Input needs to be at least 3 characters: "{pkg}"', "red"))
+                continue
+            if pkg not in self.database:
+                logging.warning(colored(
+                    f'"{pkg}" is referenced as a dependency but is not in the '
+                    f'database - install it manually.', "yellow"))
+                continue
+
+            urls = self.database[pkg][DbTypes.URL]
+            hashes = self.database[pkg][DbTypes.HASHES]
+            self.check_pkg_status(pkg)
+
+            for index, url in enumerate(urls):
+                if not any(ext in url for ext in EXTENSIONS):
+                    continue
+                # The book lists one MD5 sum for the tarball; extra URLs are
+                # patches and have none. zip() used to silently drop them.
+                hash_val = hashes[index] if index < len(hashes) else None
+                filename = os.path.basename(url)
+
+                if os.path.isfile(filename):
+                    logging.info(colored(f'{filename} already has been downloaded', "blue"))
+                    continue
+
+                logging.info(colored(f'\nDownloading: {url}\n', "green"))
+                try:
+                    wget.download(url, filename)
+                except Exception as exc:
+                    # A half-written file would masquerade as a good download.
+                    if os.path.isfile(filename):
+                        os.remove(filename)
+                    logging.error(colored(f'\nFailed to download {url}: {exc}', "red"))
+                    continue
+                print(f'\nSuccessfully downloaded {url}')
+                md5_check(filename, hash_val)
 
     def list_deps(self, pkg, rec=None, opt=None):
         """Lists all dependencies (can be required, recommended, and/or optional).
@@ -226,26 +348,65 @@ class Commands(object):
             None
 
         """
-        pkg_list = [pkg]
         if pkg not in self.database:
             self.search(pkg)
-        else:
-            if rec:
-                pkg_list.extend([x for x in self.database[pkg]
-                                [DbTypes.DEPS][DbTypes.RECOMMENDED]])
-            elif opt:
-                pkg_list.extend([x for x in self.database[pkg]
-                                [DbTypes.DEPS][DbTypes.RECOMMENDED]])
-                pkg_list.extend([x for x in self.database[pkg]
-                                [DbTypes.DEPS][DbTypes.OPTIONAL]])
+            return [pkg]
 
-        for pkg_dep in pkg_list:
-            if pkg_dep in self.database:
-                for dep in self.database[pkg_dep][DbTypes.DEPS][DbTypes.REQUIRED]:
-                    # prevents circular dependency problems
-                    pkg_list[:] = [x for x in pkg_list if x != dep]
-                    pkg_list.append(dep)
-        # ensure that main package is last (insurance for circular dependency problem)
-        pkg_list.insert(0, pkg_list.pop(pkg_list.index(pkg)))
-        pkg_list.reverse()
-        return pkg_list
+        order = []
+        # None = unseen, False = on the current path, True = emitted
+        state = {}
+        # Each frame is (package, is_root, children_already_queued)
+        stack = [(pkg, True, False)]
+
+        while stack:
+            node, is_root, expanded = stack.pop()
+
+            if expanded:
+                if not state.get(node):
+                    state[node] = True
+                    order.append(node)
+                continue
+
+            if state.get(node) is True:
+                continue
+            if state.get(node) is False:
+                # Already on the path above us: a dependency cycle. BLFS
+                # documents these as "install X, then rebuild it later"; we
+                # break the edge and keep the first position we chose.
+                continue
+
+            state[node] = False
+            stack.append((node, is_root, True))
+            for dep in reversed(self._dep_edges(node, is_root, rec, opt)):
+                if state.get(dep) is not True:
+                    stack.append((dep, False, False))
+
+        return order
+
+    def _dep_edges(self, pkg, is_root, rec, opt):
+        """Returns the dependencies of pkg that should be pulled into the build.
+
+        Required dependencies always apply. Recommended and optional ones are
+        only expanded for the package the user actually asked for -- pulling
+        every optional dependency transitively would drag in most of the book.
+
+        Args:
+            pkg (str): The package whose edges are being resolved.
+            is_root (bool): True if this is the package the user requested.
+            rec (bool): Whether to include recommended dependencies.
+            opt (bool): Whether to include optional dependencies.
+
+        Returns:
+            list: The dependency names to expand.
+
+        """
+        if pkg not in self.database:
+            return []
+
+        deps = self.database[pkg][DbTypes.DEPS]
+        edges = list(deps[DbTypes.REQUIRED])
+        if is_root and (rec or opt):
+            edges.extend(deps[DbTypes.RECOMMENDED])
+        if is_root and opt:
+            edges.extend(deps[DbTypes.OPTIONAL])
+        return edges

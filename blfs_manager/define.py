@@ -17,9 +17,11 @@ EXCEPTIONS = ['Xorg Libraries', 'Xorg Applications',
 
 EXTENSIONS = ['.bz2', '.tar.xz', '.zip', '.tar.gz', '.patch', '.tgz']
 
-CIRC_EXCEPTIONS = ['cups-filters-1.28.7']
-
 DB_FILENAME = 'lfs-deps-11.3'
+
+# Resolve the database next to the package rather than relative to the caller's
+# CWD, otherwise every invocation from a new directory re-scrapes the whole book.
+DB_PATH = ROOT_PATH / DB_FILENAME
 
 # database value types
 class DbTypes:
