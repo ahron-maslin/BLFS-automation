@@ -70,7 +70,10 @@ trove_classifiers = [
     'Intended Audience :: End Users/Desktop',
     'License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)',
     'Operating System :: OS Independent',
-    'Programming Language :: Python :: 3.8',
+    'Programming Language :: Python :: 3.10',
+    'Programming Language :: Python :: 3.11',
+    'Programming Language :: Python :: 3.12',
+    'Programming Language :: Python :: 3.13',
     'Programming Language :: Python :: Implementation :: CPython',
     'Programming Language :: Python :: Implementation :: PyPy',
     'Programming Language :: Python',
@@ -86,6 +89,9 @@ setup(
     license='LGPL',
     url='https://github.com/ahron-maslin/BLFS-automation',
 
+    # requests >= 2.33.0 (CVE-2026-25645) requires Python 3.10+. BLFS 11.3
+    # ships Python 3.11.2, so this costs the target audience nothing.
+    python_requires='>=3.10',
     install_requires=requirements,
     extras_require=dict(
         dev=dev_requirements
