@@ -380,25 +380,33 @@ class TestUrlAndHashPairing:
         assert entry[DbTypes.HASHES] == ['a' * 32, 'b' * 32]
         assert len(entry[DbTypes.URL]) == 2
 
-    def test_md5_is_taken_as_the_last_whitespace_separated_token(self):
+    def test_prose_explaining_no_md5_is_available_yields_no_hash(self):
+        # install-tl-unx's book entry reads "not available, because the
+        # upstream tarball is regenerated frequently" - no hex MD5 present.
         entry = parse('junk_hash_package.html')['install-tl-unx']
-        assert entry[DbTypes.HASHES] == ['frequently']
+        assert entry[DbTypes.HASHES] == [None]
 
-    def test_prose_after_the_md5_label_yields_a_junk_hash(self):
-        # split()[-1:] takes the last word of the paragraph, whatever it is.
-        # This is how 'frequently' entered the shipped database.
+    def test_prose_after_the_md5_label_yields_no_hash(self):
         markup = ('<div class="sect1"><h1 class="sect1">P-1.0</h1>'
                   '<div class="itemizedlist">'
                   '<p>Download MD5 sum: see upstream</p></div></div>')
         entry = parse_html(markup)['P-1.0']
-        assert entry[DbTypes.HASHES] == ['upstream']
+        assert entry[DbTypes.HASHES] == [None]
 
-    def test_empty_md5_paragraph_captures_the_label_itself(self):
+    def test_empty_md5_paragraph_yields_no_hash(self):
         markup = ('<div class="sect1"><h1 class="sect1">P-1.0</h1>'
                   '<div class="itemizedlist">'
                   '<p>Download MD5 sum:</p></div></div>')
         entry = parse_html(markup)['P-1.0']
-        assert entry[DbTypes.HASHES] == ['sum:']
+        assert entry[DbTypes.HASHES] == [None]
+
+    def test_md5_is_extracted_even_amid_surrounding_prose(self):
+        markup = ('<div class="sect1"><h1 class="sect1">P-1.0</h1>'
+                  '<div class="itemizedlist">'
+                  '<p>Download MD5 sum: ' + 'C' * 32 + ' (verified upstream)'
+                  '</p></div></div>')
+        entry = parse_html(markup)['P-1.0']
+        assert entry[DbTypes.HASHES] == ['c' * 32]
 
     def test_url_without_any_md5_paragraph(self):
         markup = ('<div class="sect1"><h1 class="sect1">P-1.0</h1>'

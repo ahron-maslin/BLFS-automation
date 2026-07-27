@@ -30,7 +30,7 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Validate shipped database
-        run: python -m blfs_manager.validate blfs_manager/lfs-deps-* || true
+        run: python -m blfs_manager.validate blfs_manager/lfs-deps-*
 
       - name: Run test suite
         run: pytest -v --cov=blfs_manager --cov-report=term-missing

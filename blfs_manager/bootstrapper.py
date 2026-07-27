@@ -144,7 +144,8 @@ def collect_package_info(package, element_class, element):
                 pkg_urls.append(e['href'])
             for f in d.find_all('p'):
                 if 'Download MD5 sum:' in f.getText():
-                    pkg_hashes.extend(f.getText().split()[-1:])
+                    match = re.search(r'\b[0-9a-fA-F]{32}\b', f.getText())
+                    pkg_hashes.append(match.group(0).lower() if match else None)
 
     logging.info("Downloading info for {0}".format(pkg_name))
     database[pkg_name] = DbEntry(pkg_name, 

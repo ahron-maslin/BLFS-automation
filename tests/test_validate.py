@@ -246,17 +246,18 @@ class TestLoadDatabase:
 class TestAgainstTheRealBook:
     @pytest.mark.skipif(paths.packaged_db_path() is None,
                         reason='book database not present')
-    def test_real_database_has_exactly_the_known_error(self):
-        # Confirmed manually during review: the only genuine defect in the
-        # shipped 11.3 database is install-tl-unx's junk hash. Every other
-        # finding (url/hash count mismatches, dangling cross-references,
-        # missing URLs) is expected and must stay below error severity.
+    def test_real_database_has_no_errors(self):
+        # install-tl-unx's hash used to be the literal string "frequently"
+        # (a scraper bug: it took the last word of "not available, because
+        # the upstream tarball is regenerated frequently" as if it were the
+        # MD5). Fixed at the source in bootstrapper.py and corrected in the
+        # shipped database. Every other finding (url/hash count mismatches,
+        # dangling cross-references, missing URLs) is expected and must
+        # stay below error severity.
         db = load_database(str(paths.packaged_db_path()))
         issues = validate_database(db)
         errors = [i for i in issues if i.severity == ERROR]
-        assert len(errors) == 1
-        assert errors[0].code == 'bad-hash'
-        assert errors[0].package == 'install-tl-unx'
+        assert errors == []
 
     @pytest.mark.skipif(paths.packaged_db_path() is None,
                         reason='book database not present')
