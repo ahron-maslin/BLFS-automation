@@ -8,8 +8,9 @@ import logging
 from termcolor import colored
 
 
-from .define import DOWNLOAD_PATH, DB_PATH, INSTALLED_PATH, SYSTEMD_BASE_URL, DEFAULT_BASE_URL
+from .define import SYSTEMD_BASE_URL, DEFAULT_BASE_URL
 from .bootstrapper import bootstrap
+from . import paths
 
 
 def load_db(systemd=False):
@@ -22,10 +23,13 @@ def load_db(systemd=False):
     Returns:
         dict: A dictionary containing the loaded JSON data from the database file.
     """
-    if not os.path.exists(DB_PATH):
+    # Seeds from the read-only copy shipped in the wheel when present, so a
+    # fresh install does not re-scrape ~1600 book pages on first run.
+    db_path = paths.ensure_db()
+    if not os.path.exists(db_path):
         logging.info('Downloading database, (this is a one time process)')
         bootstrap(SYSTEMD_BASE_URL if systemd else DEFAULT_BASE_URL)
-    with open(DB_PATH, 'r') as database:
+    with open(db_path, 'r') as database:
         return json.load(database)
         
 def load_installed_log():
@@ -36,7 +40,7 @@ def load_installed_log():
         list: A list containing the names of installed packages.
     """
     try:
-        with open(INSTALLED_PATH, 'r') as i:
+        with open(paths.installed_log_path(), 'r') as i:
             installed = [line.rstrip() for line in i]
     except FileNotFoundError:
         installed = []
@@ -68,17 +72,7 @@ def check_dir():
     Returns:
         None
     """
-    if not os.path.exists(DOWNLOAD_PATH):
-        logging.debug('Download directory not found - creating one.\n')
-        try:
-            os.mkdir(DOWNLOAD_PATH, 0o755)
-        except OSError:
-            raise OSError('Creation of download directory failed!\n')
-        else:
-            logging.debug('Successfully created directory.\n')
-    else:
-        logging.debug('Found existing download directory. Proceeding...')
-    os.chdir(DOWNLOAD_PATH)
+    os.chdir(paths.ensure_sources_dir())
     return
 
 

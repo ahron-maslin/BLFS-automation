@@ -55,14 +55,26 @@ def read_file(filename, alt=None):
     return lines
 
 
+def read_requirements(filename):
+    """
+    Read a requirements file into a list of requirement strings, as
+    install_requires/extras_require expect -- not the raw file contents.
+    """
+    return [
+        line.strip()
+        for line in read_file(filename, alt='').splitlines()
+        if line.strip() and not line.strip().startswith('#')
+    ]
+
+
 generate_readme_rst()
 
 long_description = read_file(
     'README.md',
     'Cannot read README.md'
 )
-requirements = read_file('requirements.txt')
-dev_requirements = read_file('requirements-dev.txt')
+requirements = read_requirements('requirements.txt')
+dev_requirements = read_requirements('requirements-dev.txt')
 
 trove_classifiers = [
     'Development Status :: 4 - Beta',
@@ -104,6 +116,8 @@ setup(
     classifiers=trove_classifiers,
 
     packages=["blfs_manager"],
+    include_package_data=True,
+    package_data={'blfs_manager': ['lfs-deps-*']},
     entry_points=dict(
         console_scripts=[
             'blfs-pm=blfs_manager.blfspm:main'

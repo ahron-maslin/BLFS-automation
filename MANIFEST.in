@@ -1,6 +1,7 @@
 include requirements*.txt
 include CONTRIBUTING.md
 include LICENSE
+include blfs_manager/lfs-deps-*
 
 exclude .gitignore
 exclude AUTHORS.md

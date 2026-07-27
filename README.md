@@ -31,7 +31,7 @@ It is recommended that the package should always be run as root, in order to pre
 This package has many options to list, download, list commands, or install a given package.
 Note: once again it is *highly* recommended that you always run this as ```root```!
 
-Usage: ```blfs-pm [-h] [-a] [-b PACKAGE] [-c PACKAGE] [-d PACKAGE] [-f] [-l PACKAGE] [-o] [-r] [-s PACKAGE] [--systemd]```
+Usage: ```blfs-pm [-h] [-a] [-b PACKAGE] [-c PACKAGE] [-d PACKAGE] [-f] [-l PACKAGE] [-o] [-r] [-s PACKAGE] [--systemd] [--resume] [--history]```
 
 Note: It is recommended to follow along the installation process in the BLFS book. ```blfs-pm``` is not perfect and I have not tested every BLFS package. There are still some issues with circular dependencies, and at the moment it is best to monitor everything to prevent problems. Additionally, the ```-b (build)``` option will prompt the user to run EVERY command provided for the specific package. Some commands can only be run if optional dependencies are installed (like Texlive, Docbook, etc.). Furthermore, some packages require further kernel configuration (and recompilation) as a prerequisite for installation.
 
@@ -56,9 +56,33 @@ Note: It is recommended to follow along the installation process in the BLFS boo
 
   -s PACKAGE, --search PACKAGE      Search for a given package.
   --systemd                         Pass this flag if you built LFS with Systemd
+  --resume                          Resume the last interrupted build queue.
+  --history                         Show recent build history and exit.
   ```
 
 ## Additional options:
+
+### State and cache locations
+
+`blfs-pm` keeps the package database, install log, build journal and
+downloaded sources outside of its own installed package directory:
+
+- Running as root (the recommended way): `/var/lib/blfs-pm` and
+  `/var/cache/blfs-pm/sources`.
+- Running as a normal user: `~/.local/state/blfs-pm` and
+  `~/.cache/blfs-pm/sources` (respecting `$XDG_STATE_HOME`/`$XDG_CACHE_HOME`).
+- `BLFS_PM_STATE_DIR` / `BLFS_PM_CACHE_DIR` override either location
+  explicitly.
+
+State from a pre-1.1 install (found alongside the installed package) is
+migrated automatically the first time you run a 1.1+ version.
+
+### Resuming an interrupted build
+
+A build queue can be dozens of packages deep and take hours. If it is
+interrupted -- Ctrl+C, a failed command, a crash -- `blfs-pm --resume` picks
+up at the package that was in progress or failed, skipping everything already
+completed. `blfs-pm --history` shows recent build attempts and their outcome.
 
 
 ## Contributers: 

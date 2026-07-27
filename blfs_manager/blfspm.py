@@ -4,12 +4,17 @@ import logging
 
 from .utils import load_db, load_installed_log, print_commands, print_deps
 from .commands import Commands
+from . import paths
 from blfs_manager import __VERSION__, __PKGNAME__
 
 
 def main():
     logging.basicConfig(level=logging.INFO, format='%(message)s')
     logging.info(f'{__PKGNAME__} {__VERSION__}')
+
+    # Fail fast on an unwritable state/cache directory rather than after
+    # scraping ~1600 book pages, and migrate any pre-1.1 state in-place.
+    paths.preflight()
 
     parser = argparse.ArgumentParser(
         description='A simple package that lists, downloads, and installs any valid BLFS package along with any dependencies.\n', 
@@ -29,8 +34,10 @@ def main():
                         help='List/download optional packages.\n', action='store_true')
     parser.add_argument('-r', '--recommended',
                         help='List/download recommended packages.\n', action='store_true')
-    parser.add_argument('-s', '--search', help='Search for a given package. (Case Sensitive)\n', metavar='PACKAGE')
+    parser.add_argument('-s', '--search', help='Search for a given package. (Case insensitive)\n', metavar='PACKAGE')
     parser.add_argument('--systemd', help='Pass this flag if you built LFS with Systemd', action='store_true')
+    parser.add_argument('--resume', help='Resume the last interrupted build queue.\n', action='store_true')
+    parser.add_argument('--history', help='Show recent build history and exit.\n', action='store_true')
     parser.add_argument('-V', '--version', action='version',
                         version=f'{__PKGNAME__} {__VERSION__}')
     args = parser.parse_args()
@@ -42,7 +49,11 @@ def main():
     signal.signal(signal.SIGINT, action.cleanup)
 
     try:
-        if args.download:
+        if args.history:
+            action.journal.print_history()
+        elif args.resume:
+            action.build_pkg(None, args.force, resume=True)
+        elif args.download:
             action.download_deps(action.list_deps(
                 args.download, args.recommended, args.optional))
         elif args.list:

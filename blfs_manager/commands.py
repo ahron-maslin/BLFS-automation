@@ -3,11 +3,13 @@ import zipfile
 import os
 import logging
 from shutil import rmtree
-import wget
 from termcolor import colored
 
-from .define import DbTypes, ROOT_PATH, EXCEPTIONS, EXTENSIONS, DOWNLOAD_PATH, INSTALLED_PATH
-from .utils import run_cmd, md5_check, safe_extract, rlinput, check_dir
+from .define import DbTypes, EXCEPTIONS, EXTENSIONS
+from . import paths
+from .downloader import Downloader
+from .journal import BuildJournal
+from .utils import run_cmd, safe_extract, rlinput, check_dir
 
 class Commands(object):
     """Class to handle installation of BLFS packages.
@@ -22,29 +24,33 @@ class Commands(object):
 
     """
 
-    def __init__(self, database, installed):
+    def __init__(self, database, installed, journal=None):
         """Initializes Commands with a database of BLFS packages and a list of installed packages.
 
         Args:
             database (dict): Dictionary containing information on BLFS packages.
             installed (list): List of installed BLFS packages.
+            journal (BuildJournal, optional): Build journal to record progress
+                to. Defaults to the one at the resolved state directory.
 
         """
         self.database = database
         self.installed = installed
         # Set once a build directory exists; cleanup() may fire before then.
         self.package_dir = None
+        self.journal = journal if journal is not None else BuildJournal(paths.journal_path())
 
     def write_installed_log(self):
         """Writes the list of installed packages to a logfile."""
         # Write-then-rename: a crash or power loss mid-write must not truncate
         # the record of what is already on the system.
-        tmp_path = f'{INSTALLED_PATH}.tmp'
+        installed_path = paths.installed_log_path()
+        tmp_path = f'{installed_path}.tmp'
         try:
             with open(tmp_path, 'w') as install_file:
                 for i in self.installed:
                     install_file.write(f'{i}\n')
-            os.replace(tmp_path, INSTALLED_PATH)
+            os.replace(tmp_path, installed_path)
         except OSError as exc:
             logging.error(colored(
                 f'Could not write installed-package log ({exc}) - '
@@ -58,13 +64,16 @@ class Commands(object):
             frame (object): The current stack frame.
 
         """
-        os.chdir(ROOT_PATH)
+        # Step out of the build tree before removing it.
+        sources = paths.sources_dir()
+        os.chdir(sources if sources.is_dir() else os.sep)
         if self.package_dir and os.path.exists(self.package_dir):
             rmtree(self.package_dir, ignore_errors=True)
 
         logging.error(colored('Installation interrupted - exiting.', 'red'))
+        self.journal.abort_queue(reason='interrupted (SIGINT)')
         self.write_installed_log()
-        exit(1)
+        raise SystemExit(1)
 
     def check_pkg_status(self, pkg, kconf=False):
         """Checks the status of the given package and logs any relevant information.
@@ -140,23 +149,40 @@ class Commands(object):
         commands_list = list(map(lambda x: x, self.database[pkg][DbTypes.COMMANDS]))
         return commands_list
 
-    def build_pkg(self, pkg, force=None):
+    def build_pkg(self, pkg, force=None, resume=False):
         """
         Installs a given BLFS package on the system.
 
         Args:
-            pkg (str): The name of the package to install.
+            pkg (str): The name of the package to install. Ignored when
+                resume is True, since the journal already knows the target.
             force (bool, optional): A flag to force the installation even if the package is already installed.
+            resume (bool): Continue the last interrupted build queue instead
+                of resolving a new one.
 
         Returns:
             None
         """
-        self.search(pkg)
-        pkg_queue = self.list_deps(pkg)
+        if resume:
+            state = self.journal.resume_queue()
+            if state is None:
+                logging.info(colored(
+                    'Nothing to resume - no interrupted build queue found.', "blue"))
+                return
+            pkg_queue = state.remaining
+            logging.info(colored(
+                f'Resuming build of "{state.target}" - '
+                f'{len(pkg_queue)} package(s) remaining.', "green"))
+        else:
+            self.search(pkg)
+            pkg_queue = self.list_deps(pkg)
+            self.journal.start_queue(pkg, pkg_queue)
+
         self.download_deps(pkg_queue)
         for package in pkg_queue:
             self.install_package(package, force)
-    
+        self.journal.complete_queue()
+
     def install_package(self, pkg, force):
         """
         Installs a BLFS package on the system.
@@ -170,12 +196,14 @@ class Commands(object):
         """
         if pkg in self.installed and not force:
             logging.info(colored(f'"{pkg}" has already been installed - skipping', "blue"))
+            self.journal.skip_package(pkg, reason='already installed')
             return
 
         if pkg in EXCEPTIONS:
             logging.info(colored(
                 f'"{pkg}" is a book section, not a single package - '
                 f'follow the BLFS book to install it manually.', "blue"))
+            self.journal.skip_package(pkg, reason='book section - manual install')
             return
 
         if self.database.get(pkg, {}).get(DbTypes.TYPE) != 'BLFS':
@@ -183,20 +211,25 @@ class Commands(object):
             logging.info(colored(
                 f'"{pkg}" is not a BLFS package - install it manually, '
                 f'then re-run to continue.', "blue"))
+            self.journal.skip_package(pkg, reason='not a BLFS package')
             return
 
         logging.info(colored(f'Installing {pkg}.\n', "green"))
-        os.chdir(DOWNLOAD_PATH)
+        self.journal.start_package(pkg)
+        os.chdir(paths.sources_dir())
 
         if not self._extract_source(pkg):
+            self.journal.fail_package(pkg, reason='extraction failed')
             return
 
         self.package_dir = os.getcwd()
+        self.journal.record_extracted(pkg, self.package_dir)
         try:
             if not self._run_install_commands(pkg):
                 logging.error(colored(
                     f'Build of "{pkg}" failed - leaving {self.package_dir} '
                     f'in place so you can inspect it.', "red"))
+                self.journal.fail_package(pkg, reason='build command failed or declined')
                 return
             # Record regardless of --force: the package really is on the system
             # now, and dropping it would make the next run rebuild it.
@@ -204,8 +237,9 @@ class Commands(object):
                 self.installed.append(pkg)
             self.write_installed_log()
             logging.info(colored(f'Successfully installed {pkg}!', "green"))
+            self.journal.complete_package(pkg)
         finally:
-            os.chdir(DOWNLOAD_PATH)
+            os.chdir(paths.sources_dir())
 
         rmtree(self.package_dir, ignore_errors=True)
         self.package_dir = None
@@ -277,7 +311,9 @@ class Commands(object):
             if answer == 'm':
                 command = rlinput('Custom command to run: ', command)
 
-            if run_cmd(command) != 0:
+            status = run_cmd(command)
+            self.journal.record_command(pkg, command, status)
+            if status != 0:
                 return False
         return True
 
@@ -295,43 +331,54 @@ class Commands(object):
 
         """
         check_dir()
-        for pkg in dlist:
-            if pkg in EXCEPTIONS:
-                logging.info(f'"{pkg}" package must be installed manually.')
+        with Downloader() as fetcher:
+            for pkg in dlist:
+                if pkg in EXCEPTIONS:
+                    logging.info(f'"{pkg}" package must be installed manually.')
+                    continue
+                if pkg not in self.database:
+                    logging.warning(colored(
+                        f'"{pkg}" is referenced as a dependency but is not in the '
+                        f'database - install it manually.', "yellow"))
+                    continue
+
+                self.check_pkg_status(pkg)
+                for filename, mirrors, hash_val in self._download_targets(pkg):
+                    result = fetcher.fetch(mirrors, filename, hash_val)
+                    if not result.ok:
+                        logging.error(colored(
+                            f'Failed to download {filename}: {result.error}', "red"))
+
+    def _download_targets(self, pkg):
+        """Groups a package's URLs into one download target per distinct file.
+
+        The database stores a flat URL list mixing the tarball, its patches and
+        any mirrors, but records a single MD5 sum -- for the tarball only. URLs
+        sharing a basename are mirrors of one file, so they are grouped and the
+        hash is looked up against the original index of the first occurrence.
+
+        Args:
+            pkg (str): The package whose URLs are being grouped.
+
+        Returns:
+            list: Tuples of (filename, mirror urls, expected hash or None).
+
+        """
+        urls = self.database[pkg][DbTypes.URL]
+        hashes = self.database[pkg][DbTypes.HASHES]
+
+        targets = {}
+        for index, url in enumerate(urls):
+            if not any(ext in url for ext in EXTENSIONS):
                 continue
-            if pkg not in self.database:
-                logging.warning(colored(
-                    f'"{pkg}" is referenced as a dependency but is not in the '
-                    f'database - install it manually.', "yellow"))
-                continue
+            filename = os.path.basename(url)
+            if filename not in targets:
+                targets[filename] = (
+                    [], hashes[index] if index < len(hashes) else None)
+            targets[filename][0].append(url)
 
-            urls = self.database[pkg][DbTypes.URL]
-            hashes = self.database[pkg][DbTypes.HASHES]
-            self.check_pkg_status(pkg)
-
-            for index, url in enumerate(urls):
-                if not any(ext in url for ext in EXTENSIONS):
-                    continue
-                # The book lists one MD5 sum for the tarball; extra URLs are
-                # patches and have none. zip() used to silently drop them.
-                hash_val = hashes[index] if index < len(hashes) else None
-                filename = os.path.basename(url)
-
-                if os.path.isfile(filename):
-                    logging.info(colored(f'{filename} already has been downloaded', "blue"))
-                    continue
-
-                logging.info(colored(f'\nDownloading: {url}\n', "green"))
-                try:
-                    wget.download(url, filename)
-                except Exception as exc:
-                    # A half-written file would masquerade as a good download.
-                    if os.path.isfile(filename):
-                        os.remove(filename)
-                    logging.error(colored(f'\nFailed to download {url}: {exc}', "red"))
-                    continue
-                print(f'\nSuccessfully downloaded {url}')
-                md5_check(filename, hash_val)
+        return [(name, mirrors, hash_val)
+                for name, (mirrors, hash_val) in targets.items()]
 
     def list_deps(self, pkg, rec=None, opt=None):
         """Lists all dependencies (can be required, recommended, and/or optional).
