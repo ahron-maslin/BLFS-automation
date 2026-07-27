@@ -1,0 +1,33 @@
+<div class="sect1" lang="en" xml:lang="en">
+  <div class="titlepage">
+    <div><div><h1 class="sect1"><a id="apache" shape="rect"></a>Apache-2.4.55</h1></div></div>
+  </div>
+
+  <div class="package">
+    <p>Introduction to Apache HTTPD</p>
+
+    <div class="itemizedlist">
+      <ul class="compact">
+        <li class="listitem">
+          <p>Download (HTTP): <a class="ulink"
+             href="https://archive.apache.org/dist/httpd/httpd-2.4.55.tar.bz2"
+             shape="rect">https://archive.apache.org/dist/httpd/httpd-2.4.55.tar.bz2</a></p>
+        </li>
+        <li class="listitem"><p>Download MD5 sum: 0e1bd54c48f7f5bf4bbbf9a20bf46b4a</p></li>
+        <li class="listitem"><p>Download size: 7.1 MB</p></li>
+        <li class="listitem">
+          <p>Required patch: <a class="ulink"
+             href="https://www.linuxfromscratch.org/patches/blfs/11.3/httpd-2.4.55-blfs_layout-1.patch"
+             shape="rect">https://www.linuxfromscratch.org/patches/blfs/11.3/httpd-2.4.55-blfs_layout-1.patch</a></p>
+        </li>
+      </ul>
+    </div>
+
+    <p class="required">Required: <a class="xref" href="../general/apr-util.html"
+       title="Apr-Util-1.6.3" shape="rect">Apr-Util-1.6.3</a></p>
+  </div>
+
+  <div class="installation">
+    <pre class="userinput"><kbd class="command">patch -Np1 -i ../httpd-2.4.55-blfs_layout-1.patch</kbd></pre>
+  </div>
+</div>
