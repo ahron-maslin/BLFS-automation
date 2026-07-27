@@ -8,7 +8,8 @@ from urllib3.util import Retry
 from bs4 import BeautifulSoup as bs4
 from requests.adapters import HTTPAdapter
 
-from .define import DEFAULT_BASE_URL, DB_PATH, HEADERS, DbTypes
+from .define import DEFAULT_BASE_URL, HEADERS, DbTypes
+from . import paths
 
 database = {}
 
@@ -205,7 +206,9 @@ def bootstrap(lfs_flavor=DEFAULT_BASE_URL):
 
     # Write via a temporary file so an interrupted scrape cannot leave behind a
     # truncated database that every later run would happily load.
-    tmp_path = f'{DB_PATH}.tmp'
+    db_path = paths.db_path()
+    paths.ensure_writable(db_path.parent)
+    tmp_path = f'{db_path}.tmp'
     with open(tmp_path, 'w') as file:
         json.dump(database, file)
-    os.replace(tmp_path, DB_PATH)
+    os.replace(tmp_path, db_path)

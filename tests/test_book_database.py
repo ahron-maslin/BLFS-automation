@@ -10,15 +10,17 @@ import json
 import pytest
 
 from blfs_manager.commands import Commands
-from blfs_manager.define import DB_PATH
+from blfs_manager import paths
+
+_SEED_PATH = paths.packaged_db_path()
 
 pytestmark = pytest.mark.skipif(
-    not DB_PATH.exists(), reason='book database not present')
+    _SEED_PATH is None, reason='book database not present')
 
 
 @pytest.fixture(scope='module')
 def book():
-    with open(DB_PATH) as handle:
+    with open(_SEED_PATH) as handle:
         return json.load(handle)
 
 

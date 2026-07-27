@@ -1,4 +1,4 @@
-from pathlib import Path
+from . import paths
 
 DEFAULT_BASE_URL = 'https://www.linuxfromscratch.org/blfs/view/stable/'
 SYSTEMD_BASE_URL = 'https://www.linuxfromscratch.org/blfs/view/stable-systemd/' 
@@ -6,22 +6,40 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT x.y; rv:10.0) Gecko/20100101 Firefox/10.0'
 }
 
-ROOT_PATH = Path(__file__).resolve().parent.parent
-
-DOWNLOAD_PATH = ROOT_PATH / 'blfs_sources/'
-
-INSTALLED_PATH = ROOT_PATH / '.installed_log'
-
 EXCEPTIONS = ['Xorg Libraries', 'Xorg Applications',
               'Xorg Fonts', 'Xorg Legacy']
 
 EXTENSIONS = ['.bz2', '.tar.xz', '.zip', '.tar.gz', '.patch', '.tgz']
 
-DB_FILENAME = 'lfs-deps-11.3'
+_LEGACY_PATHS = {
+    'ROOT_PATH': lambda: paths.PACKAGE_DIR.parent,
+    'DOWNLOAD_PATH': paths.sources_dir,
+    'INSTALLED_PATH': paths.installed_log_path,
+    'DB_PATH': paths.db_path,
+    'DB_FILENAME': lambda: paths.DEFAULT_DB_FILENAME,
+}
 
-# Resolve the database next to the package rather than relative to the caller's
-# CWD, otherwise every invocation from a new directory re-scrapes the whole book.
-DB_PATH = ROOT_PATH / DB_FILENAME
+
+def __getattr__(name):
+    """Resolves the former path constants through :mod:`blfs_manager.paths`.
+
+    These used to be module-level constants computed at import time, which
+    pinned every location to ``site-packages`` and made them impossible to
+    override in tests or by environment. They are resolved on access instead.
+
+    Args:
+        name (str): The attribute being looked up.
+
+    Returns:
+        pathlib.Path or str: The resolved location.
+
+    Raises:
+        AttributeError: If name is not a known legacy path constant.
+
+    """
+    if name in _LEGACY_PATHS:
+        return _LEGACY_PATHS[name]()
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
 
 # database value types
 class DbTypes:
